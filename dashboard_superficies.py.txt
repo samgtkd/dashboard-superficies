@@ -1,0 +1,361 @@
+# -*- coding: utf-8 -*-
+# Tableau de bord interactif — Superficies (4 tableaux)
+# Onglets : Totaux | Départements | Sous-préfectures | Secteurs administratifs
+# Affiche les % sur les graphiques, et dans les tables
+# Compatible Dash 3+ (app.run)
+
+import pandas as pd
+from dash import Dash, dcc, html, Input, Output, dash_table
+import plotly.express as px
+
+# ------------------------------------------------------------
+# 1) DONNÉES — converties en float (décimales FR -> .)
+# ------------------------------------------------------------
+
+# Totaux
+TOTAL_GLOBAL = 126_778.76
+df_totaux = pd.DataFrame({
+    "Indicateur": ["Surface en production", "Surface non en production"],
+    "Valeur (ha)": [109_450.97, 17_327.80]
+})
+# Contrôle léger : ajuster le total si nécessaire
+s_total = df_totaux["Valeur (ha)"].sum()
+if abs(s_total - TOTAL_GLOBAL) > 0.05:
+    TOTAL_GLOBAL = float(s_total)
+
+# Départements
+df_dept = pd.DataFrame({
+    "Département": ["FERKESSEDOUGOU", "KONG", "OUANGOLODOUGOU"],
+    "Surface en production (ha)": [46_393.21, 41_428.79, 21_628.97],
+    "Surface non en production (ha)": [8_845.49, 4_306.10, 4_176.21]
+})
+df_dept["Total (ha)"] = df_dept["Surface en production (ha)"] + df_dept["Surface non en production (ha)"]
+
+# Pourcentages (par rapport au total global)
+df_dept["% Production"]       = df_dept["Surface en production (ha)"]      / TOTAL_GLOBAL * 100
+df_dept["% Non-production"]   = df_dept["Surface non en production (ha)"]  / TOTAL_GLOBAL * 100
+df_dept["% Total"]            = df_dept["Total (ha)"]                      / TOTAL_GLOBAL * 100
+
+# Sous-préfectures
+df_sp = pd.DataFrame([
+    # Département, Sous-préfecture, prod, non-prod
+    ["FERKESSEDOUGOU", "FERKESSEDOUGOU", 19_756.963, 3_560.272],
+    ["FERKESSEDOUGOU", "KOUMBALA", 12_060.2255, 2_497.2632],
+    ["FERKESSEDOUGOU", "FERKESSEDOUGOU / TOGONIERE", 14_576.02, 2_787.95],
+    ["KONG", "BILIMONO", 14_472.94, 2_229.60],
+    ["KONG", "KONG", 10_919.20, 1_202.00],
+    ["KONG", "NAFANA (DE KONG)", 10_422.95, 593.50],
+    ["KONG", "SIKOLO", 5_613.70, 281.00],
+    ["OUANGOLODOUGOU", "NIELLE", 3_267.85, 686.45],
+    ["OUANGOLODOUGOU", "OUANGOLODOUGOU", 5_483.06, 1_477.86],
+    ["OUANGOLODOUGOU", "TOUMOUKORO", 2_739.21, 168.10],
+    ["OUANGOLODOUGOU", "DIAWALA", 5_753.05, 1_676.05],
+    ["OUANGOLODOUGOU", "KAOUARA", 4_385.80, 167.75],
+], columns=["Département", "Sous-préfecture", "Surface en production (ha)", "Surface non en production (ha)"])
+df_sp["Total (ha)"] = df_sp["Surface en production (ha)"] + df_sp["Surface non en production (ha)"]
+
+# Pourcentages globaux (par rapport au total global)
+df_sp["% Production"]       = df_sp["Surface en production (ha)"]      / TOTAL_GLOBAL * 100
+df_sp["% Non-production"]   = df_sp["Surface non en production (ha)"]  / TOTAL_GLOBAL * 100
+df_sp["% Total"]            = df_sp["Total (ha)"]                      / TOTAL_GLOBAL * 100
+
+# Secteurs administratifs
+df_sect = pd.DataFrame([
+    ["Secteur Non communal", 93_037.1055, 13_581.2332],
+    ["Secteur communal",     16_413.8630,  3_746.5620],
+], columns=["Secteur administratif", "Surface en production (ha)", "Surface non en production (ha)"])
+df_sect["Total (ha)"] = df_sect["Surface en production (ha)"] + df_sect["Surface non en production (ha)"]
+
+df_sect["% Production"]       = df_sect["Surface en production (ha)"]      / TOTAL_GLOBAL * 100
+df_sect["% Non-production"]   = df_sect["Surface non en production (ha)"]  / TOTAL_GLOBAL * 100
+df_sect["% Total"]            = df_sect["Total (ha)"]                      / TOTAL_GLOBAL * 100
+
+# ------------------------------------------------------------
+# 2) OUTILS DE FORMATAGE
+# ------------------------------------------------------------
+def fmt_ha(x):
+    try:
+        return f"{x:,.2f}".replace(",", " ").replace(".", ",")
+    except:
+        return x
+
+def fmt_pct(x):
+    try:
+        return f"{x:.2f}%".replace(".", ",")
+    except:
+        return x
+
+# Colonnes formatées pour les tables
+def add_formatted_columns(df, keys):
+    out = df.copy()
+    for k in keys:
+        out[f"{k} (fmt)"] = out[k].apply(fmt_ha)
+    # pourcentages s’ils existent
+    for k in ["% Production", "% Non-production", "% Total"]:
+        if k in out.columns:
+            out[k] = out[k].apply(fmt_pct)
+    return out
+
+df_dept_table = add_formatted_columns(df_dept, ["Surface en production (ha)", "Surface non en production (ha)", "Total (ha)"])
+df_sp_table   = add_formatted_columns(df_sp,   ["Surface en production (ha)", "Surface non en production (ha)", "Total (ha)"])
+df_sect_table = add_formatted_columns(df_sect, ["Surface en production (ha)", "Surface non en production (ha)", "Total (ha)"])
+
+# ------------------------------------------------------------
+# 3) APP DASH (layout)
+# ------------------------------------------------------------
+app = Dash(__name__)
+app.title = "Superficies — Tableau de bord"
+
+tabs_style = {"padding": "14px", "background": "#f8fafc"}
+card_style = {"padding": "14px", "borderRadius": "14px", "boxShadow": "0 4px 14px rgba(0,0,0,0.08)", "background": "white"}
+
+app.layout = html.Div([
+    html.H1("🌾 Superficies — Tableau de bord interactif", style={"textAlign": "center"}),
+
+    dcc.Tabs([
+        # --- Onglet Totaux ---
+        dcc.Tab(label="Totaux", children=[
+            html.Br(),
+            html.Div([
+                html.Div([
+                    html.Div("Total global (ha)", style={"fontWeight": "600", "color": "#555"}),
+                    html.Div(fmt_ha(TOTAL_GLOBAL), style={"fontSize": "28px", "fontWeight": "700"})
+                ], style=card_style | {"width": "260px"}),
+            ], style={"display": "flex", "gap": "14px", "marginBottom": "12px"}),
+
+            dcc.Graph(
+                figure=px.pie(
+                    df_totaux, names="Indicateur", values="Valeur (ha)",
+                    title="Répartition globale : Production vs Non-production"
+                ).update_traces(
+                    textinfo="percent+label",
+                    hovertemplate="%{label}<br>%{value:.2f} ha<br>%{percent}<extra></extra>"
+                )
+            ),
+
+            html.H3("Données"),
+            dash_table.DataTable(
+                columns=[{"name": c, "id": c} for c in df_totaux.columns],
+                data=df_totaux.to_dict("records"),
+                sort_action="native",
+                style_table={"maxWidth": "600px"},
+                style_cell={"textAlign": "left", "padding": "6px"},
+            )
+        ], style=tabs_style),
+
+        # --- Onglet Départements ---
+        dcc.Tab(label="Départements", children=[
+            html.Br(),
+            html.Div([
+                html.Label("Indicateur"),
+                dcc.Dropdown(
+                    id="dd_dept_metric",
+                    options=[
+                        {"label": "Surface en production (ha)", "value": "Surface en production (ha)"},
+                        {"label": "Surface non en production (ha)", "value": "Surface non en production (ha)"},
+                        {"label": "Total (ha)", "value": "Total (ha)"},
+                    ],
+                    value="Total (ha)",
+                    clearable=False
+                )
+            ], style={"maxWidth": "420px", "marginBottom": "10px"}),
+
+            dcc.Graph(id="graph_dept"),
+
+            html.H3("Données"),
+            dash_table.DataTable(
+                id="table_dept",
+                columns=[
+                    {"name": "Département", "id": "Département"},
+                    {"name": "Surface en production (ha)", "id": "Surface en production (ha) (fmt)"},
+                    {"name": "Surface non en production (ha)", "id": "Surface non en production (ha) (fmt)"},
+                    {"name": "Total (ha)", "id": "Total (ha) (fmt)"},
+                    {"name": "% Production", "id": "% Production"},
+                    {"name": "% Non-production", "id": "% Non-production"},
+                    {"name": "% Total", "id": "% Total"},
+                ],
+                data=df_dept_table[[
+                    "Département",
+                    "Surface en production (ha) (fmt)",
+                    "Surface non en production (ha) (fmt)",
+                    "Total (ha) (fmt)",
+                    "% Production", "% Non-production", "% Total"
+                ]].to_dict("records"),
+                sort_action="native",
+                style_table={"overflowX": "auto"},
+                style_cell={"textAlign": "left", "padding": "6px"},
+                page_size=10
+            )
+        ], style=tabs_style),
+
+        # --- Onglet Sous-préfectures ---
+        dcc.Tab(label="Sous-préfectures", children=[
+            html.Br(),
+            html.Div([
+                html.Div([
+                    html.Label("Indicateur"),
+                    dcc.Dropdown(
+                        id="dd_sp_metric",
+                        options=[
+                            {"label": "Surface en production (ha)", "value": "Surface en production (ha)"},
+                            {"label": "Surface non en production (ha)", "value": "Surface non en production (ha)"},
+                            {"label": "Total (ha)", "value": "Total (ha)"},
+                        ],
+                        value="Total (ha)", clearable=False
+                    )
+                ], style={"width": "49%", "display": "inline-block"}),
+                html.Div([
+                    html.Label("Filtrer par département"),
+                    dcc.Dropdown(
+                        id="dd_sp_dep",
+                        options=[{"label": "TOUS", "value": "TOUS"}] + [
+                            {"label": d, "value": d} for d in sorted(df_sp["Département"].unique().tolist())
+                        ],
+                        value="TOUS", clearable=False
+                    )
+                ], style={"width": "49%", "display": "inline-block"})
+            ], style={"marginBottom": "10px"}),
+
+            dcc.Graph(id="graph_sp"),
+
+            html.H3("Données"),
+            dash_table.DataTable(
+                id="table_sp",
+                columns=[
+                    {"name": "Département", "id": "Département"},
+                    {"name": "Sous-préfecture", "id": "Sous-préfecture"},
+                    {"name": "Surface en production (ha)", "id": "Surface en production (ha) (fmt)"},
+                    {"name": "Surface non en production (ha)", "id": "Surface non en production (ha) (fmt)"},
+                    {"name": "Total (ha)", "id": "Total (ha) (fmt)"},
+                    {"name": "% Production", "id": "% Production"},
+                    {"name": "% Non-production", "id": "% Non-production"},
+                    {"name": "% Total", "id": "% Total"},
+                ],
+                data=df_sp_table[[
+                    "Département", "Sous-préfecture",
+                    "Surface en production (ha) (fmt)",
+                    "Surface non en production (ha) (fmt)",
+                    "Total (ha) (fmt)",
+                    "% Production", "% Non-production", "% Total"
+                ]].to_dict("records"),
+                sort_action="native",
+                style_table={"overflowX": "auto"},
+                style_cell={"textAlign": "left", "padding": "6px"},
+                page_size=12
+            )
+        ], style=tabs_style),
+
+        # --- Onglet Secteurs administratifs ---
+        dcc.Tab(label="Secteurs administratifs", children=[
+            html.Br(),
+            html.Div([
+                html.Label("Indicateur"),
+                dcc.Dropdown(
+                    id="dd_sect_metric",
+                    options=[
+                        {"label": "Surface en production (ha)", "value": "Surface en production (ha)"},
+                        {"label": "Surface non en production (ha)", "value": "Surface non en production (ha)"},
+                        {"label": "Total (ha)", "value": "Total (ha)"},
+                    ],
+                    value="Total (ha)", clearable=False
+                )
+            ], style={"maxWidth": "420px", "marginBottom": "10px"}),
+
+            dcc.Graph(id="graph_sect"),
+
+            html.H3("Données"),
+            dash_table.DataTable(
+                id="table_sect",
+                columns=[
+                    {"name": "Secteur administratif", "id": "Secteur administratif"},
+                    {"name": "Surface en production (ha)", "id": "Surface en production (ha) (fmt)"},
+                    {"name": "Surface non en production (ha)", "id": "Surface non en production (ha) (fmt)"},
+                    {"name": "Total (ha)", "id": "Total (ha) (fmt)"},
+                    {"name": "% Production", "id": "% Production"},
+                    {"name": "% Non-production", "id": "% Non-production"},
+                    {"name": "% Total", "id": "% Total"},
+                ],
+                data=df_sect_table[[
+                    "Secteur administratif",
+                    "Surface en production (ha) (fmt)",
+                    "Surface non en production (ha) (fmt)",
+                    "Total (ha) (fmt)",
+                    "% Production", "% Non-production", "% Total"
+                ]].to_dict("records"),
+                sort_action="native",
+                style_table={"overflowX": "auto"},
+                style_cell={"textAlign": "left", "padding": "6px"},
+                page_size=10
+            )
+        ], style=tabs_style),
+    ])
+], style={"padding": "14px", "background": "#f8fafc"})
+
+# ------------------------------------------------------------
+# 4) CALLBACKS — Graphiques avec % visibles sur les barres
+#    (% dynamiques recalculés sur l'ensemble visible)
+# ------------------------------------------------------------
+
+@app.callback(
+    Output("graph_dept", "figure"),
+    Input("dd_dept_metric", "value")
+)
+def update_graph_dept(metric):
+    dff = df_dept.sort_values(metric, ascending=False).copy()
+    y = dff[metric]
+    pct = (y / y.sum() * 100).round(2)  # % contextuels (départements)
+    text = [f"{fmt_ha(v)} ha ({fmt_pct(p)})" for v, p in zip(y, pct)]
+    fig = px.bar(dff, x="Département", y=metric, color="Département",
+                 title=f"Superficies par département — {metric}", text=text)
+    fig.update_traces(textposition="outside")
+    fig.update_layout(xaxis_title="Département", yaxis_title="Hectares", xaxis_tickangle=-15)
+    return fig
+
+@app.callback(
+    Output("graph_sp", "figure"),
+    Input("dd_sp_metric", "value"),
+    Input("dd_sp_dep", "value")
+)
+def update_graph_sp(metric, dep_filter):
+    dff = df_sp.copy()
+    if dep_filter and dep_filter != "TOUS":
+        dff = dff[dff["Département"] == dep_filter]
+    dff = dff.sort_values(metric, ascending=False)
+    y = dff[metric]
+    pct = (y / y.sum() * 100).round(2)  # % contextuels (selon filtre)
+    text = [f"{fmt_ha(v)} ha ({fmt_pct(p)})" for v, p in zip(y, pct)]
+    fig = px.bar(dff, x="Sous-préfecture", y=metric, color="Département",
+                 title=f"Superficies par sous-préfecture — {metric}", text=text)
+    fig.update_traces(textposition="outside")
+    fig.update_layout(xaxis_title="Sous-préfecture", yaxis_title="Hectares", xaxis_tickangle=-30)
+    return fig
+
+@app.callback(
+    Output("graph_sect", "figure"),
+    Input("dd_sect_metric", "value")
+)
+def update_graph_sect(metric):
+    dff = df_sect.sort_values(metric, ascending=True).copy()
+    y = dff[metric]
+    pct = (y / y.sum() * 100).round(2)  # % contextuels (secteurs)
+    text = [f"{fmt_ha(v)} ha ({fmt_pct(p)})" for v, p in zip(y, pct)]
+    fig = px.bar(dff, x=metric, y="Secteur administratif", orientation="h",
+                 text=text, color="Secteur administratif",
+                 title=f"Superficies par secteur administratif — {metric}")
+    fig.update_traces(textposition="outside")
+    fig.update_layout(xaxis_title="Hectares", yaxis_title="", margin=dict(l=120, r=30))
+    return fig
+
+# ------------------------------------------------------------
+# 5) LANCEMENT
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    from google.colab import output
+    import threading, time
+
+    def run_app():
+        app.run(host="0.0.0.0", port=8050, debug=False)
+
+    threading.Thread(target=run_app).start()
+    time.sleep(3)
+    output.serve_kernel_port_as_window(8050)
